@@ -211,8 +211,8 @@ def build_steam_script(links: dict[str, dict], clan_tag: str | None = None) -> s
 
   async function setNickname(steamId, nickname) {{
     const endpoints = [
+      ["/profiles/" + steamId + "/ajaxsetnickname/", {{ sessionid: sessionId, nickname }}],
       ["/actions/AliasFriend", {{ steamid: steamId, alias: nickname }}],
-      ["/profiles/" + steamId + "/ajaxsetnickname", {{ nickname }}],
     ];
 
     const errors = [];
@@ -366,7 +366,7 @@ class LinkCog(commands.Cog):
         description="Generate a Steam Community browser script for all linked players.",
     )
     @app_commands.describe(
-        clan_tag="Optional prefix for Steam nicknames, like TT6 to create names like TT6 Spartan.",
+        clan_tag="Optional clan tag prefix for steam usernames",
     )
     async def generate(
         self,
