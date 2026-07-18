@@ -414,6 +414,7 @@ class LinkBot(commands.Bot):
             await self.tree.sync()
 
     async def on_ready(self) -> None:
+        await self.change_presence(activity=discord.Game(name="/link"))
         if self.user:
             print(f"Logged in as {self.user} ({self.user.id})")
 
