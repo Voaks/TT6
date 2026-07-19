@@ -41,6 +41,9 @@ A basic Discord slash-command bot that links Discord users to SteamID64 values a
 - `/link generate clan_tag:TT6` creates the same script, but prefixes Steam nicknames like `TT6 Spartan`.
 - `/team roles` posts the team role selection board. Administrator permission is required.
 - `/team roles_reset` clears all team role selections and updates the active board when possible. Administrator permission is required.
+- `/task roles` posts the task role selection board. Administrator permission is required.
+- `/task roles_reset` clears all task role selections and updates the active board when possible. Administrator permission is required.
+- `/roles missing` pings linked players who still need to select a team role, task role, or both. Administrator permission is required.
 
 ## Team Roles
 
@@ -55,6 +58,21 @@ Current roles:
 - Monument Team: max 6
 - Farm/Roam Team: no cap
 
+## Task Roles
+
+The task role board uses the same live-updating green button behavior as the team role board. Members can only hold one task role at a time. To switch task roles, they click their current task button again to unassign, then choose a new one.
+
+Current task roles:
+
+- Deployables (Doors, Embrasures, Lockers, Etc.): max 8
+- Autolockers: max 1
+- Nades/Smokes/Seal Mats: max 8
+- Bed Placer: max 3
+
+## Missing Role Reminders
+
+Run `/roles missing` to ping linked players who have not selected both required boards. The bot looks for channels named `team-role-select` and `task-role-select`, then tells each missing player where to finish selecting.
+
 ## Steam Script
 
 Run `/link generate`, download the generated `steam-link-friends.js`, then:
@@ -68,4 +86,4 @@ The script sends Steam friend requests and tries to set each Steam nickname to t
 
 ## Notes
 
-The bot stores links in `data/links.json` and team role selections in `data/team_roles.json`. Steam IDs should be SteamID64 values, usually 17 digits and commonly starting with `7656119`.
+The bot stores links in `data/links.json`, team role selections in `data/team_roles.json`, and task role selections in `data/task_roles.json`. Steam IDs should be SteamID64 values, usually 17 digits and commonly starting with `7656119`.

@@ -18,6 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 LINKS_FILE = DATA_DIR / "links.json"
 TEAM_ROLES_FILE = DATA_DIR / "team_roles.json"
+TASK_ROLES_FILE = DATA_DIR / "task_roles.json"
 STEAM_ID_RE = re.compile(r"7656119\d{10}")
 
 TEAM_ROLE_OPTIONS = [
@@ -29,6 +30,17 @@ TEAM_ROLE_OPTIONS = [
     {"id": "farm_team", "label": "Farm/Roam Team", "max": None},
 ]
 TEAM_ROLE_BY_ID = {role["id"]: role for role in TEAM_ROLE_OPTIONS}
+
+TASK_ROLE_OPTIONS = [
+    {
+        "id": "deployables",
+        "label": "Deployables (Doors, Embrasures, Lockers, Etc.)",
+        "max": 8,
+    },
+    {"id": "autolockers", "label": "Autolockers", "max": 1},
+    {"id": "nades_smokes_seal_mats", "label": "Nades/Smokes/Seal Mats", "max": 8},
+    {"id": "bed_placer", "label": "Bed Placer", "max": 3},
+]
 
 
 def load_dotenv() -> None:
@@ -112,8 +124,16 @@ class LinkStore:
 
 
 class TeamRoleStore:
-    def __init__(self, path: Path):
+    def __init__(
+        self,
+        path: Path,
+        role_options: list[dict] | None = None,
+        selection_label: str = "team role",
+    ):
         self.path = path
+        self.role_options = role_options or TEAM_ROLE_OPTIONS
+        self.role_by_id = {role["id"]: role for role in self.role_options}
+        self.selection_label = selection_label
         self._lock = asyncio.Lock()
 
     async def get_guild(self, guild_id: int) -> dict:
@@ -158,8 +178,9 @@ class TeamRoleStore:
             user_id = str(user.id)
             selected_role_id = self._selected_role_id(assignments, user_id)
 
-            if role_id not in TEAM_ROLE_BY_ID:
-                return "invalid", "That team role is not available anymore.", guild_data.copy()
+            if role_id not in self.role_by_id:
+                message = f"That {self.selection_label} is not available anymore."
+                return "invalid", message, guild_data.copy()
 
             if selected_role_id == role_id:
                 assignments[role_id] = [
@@ -167,17 +188,17 @@ class TeamRoleStore:
                 ]
                 guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
                 self._write_unlocked(data)
-                return "removed", "Removed your team role.", guild_data.copy()
+                return "removed", f"Removed your {self.selection_label}.", guild_data.copy()
 
             if selected_role_id is not None:
-                selected_label = TEAM_ROLE_BY_ID[selected_role_id]["label"]
+                selected_label = self.role_by_id[selected_role_id]["label"]
                 return (
                     "already_assigned",
                     f"You are already assigned to {selected_label}. Click that button again first to unassign.",
                     guild_data.copy(),
                 )
 
-            role = TEAM_ROLE_BY_ID[role_id]
+            role = self.role_by_id[role_id]
             max_members = role["max"]
             if max_members is not None and len(assignments[role_id]) >= max_members:
                 return "full", f"{role['label']} is full.", guild_data.copy()
@@ -230,13 +251,13 @@ class TeamRoleStore:
         return guild_data
 
     def _empty_assignments(self) -> dict[str, list[str]]:
-        return {role["id"]: [] for role in TEAM_ROLE_OPTIONS}
+        return {role["id"]: [] for role in self.role_options}
 
     def _clean_assignments(self, assignments: dict) -> dict[str, list[str]]:
         cleaned = self._empty_assignments()
         already_seen: set[str] = set()
 
-        for role in TEAM_ROLE_OPTIONS:
+        for role in self.role_options:
             role_id = role["id"]
             raw_user_ids = assignments.get(role_id, [])
             if not isinstance(raw_user_ids, list):
@@ -296,6 +317,29 @@ def chunk_lines(lines: list[str], max_length: int = 1900) -> list[str]:
         chunks.append(current.rstrip())
 
     return chunks
+
+
+def assigned_user_ids(guild_data: dict) -> set[str]:
+    assignments = guild_data.get("assignments")
+    if not isinstance(assignments, dict):
+        return set()
+
+    user_ids: set[str] = set()
+    for raw_role_user_ids in assignments.values():
+        if not isinstance(raw_role_user_ids, list):
+            continue
+        user_ids.update(str(user_id) for user_id in raw_role_user_ids)
+
+    return user_ids
+
+
+def find_text_channel_by_name(guild: discord.Guild, name: str) -> discord.TextChannel | None:
+    normalized_name = name.lower()
+    for channel in guild.text_channels:
+        if channel.name.lower() == normalized_name:
+            return channel
+
+    return None
 
 
 def build_steam_script(links: dict[str, dict], clan_tag: str) -> str:
@@ -445,18 +489,24 @@ def build_steam_script(links: dict[str, dict], clan_tag: str) -> str:
 """
 
 
-def build_team_roles_embed(guild_data: dict) -> discord.Embed:
+def build_role_board_embed(
+    guild_data: dict,
+    role_options: list[dict],
+    title: str,
+    selection_label: str,
+    footer: str,
+) -> discord.Embed:
     assignments = guild_data.get("assignments") or {}
     embed = discord.Embed(
-        title="Team Role Selection",
+        title=title,
         description=(
-            "Choose one team role.\n\n"
-            "Click your current selection again to remove yourself, then choose a new role."
+            f"Choose one {selection_label}.\n\n"
+            "Click your current selection again to remove yourself, then choose a new one."
         ),
         color=discord.Color.green(),
     )
 
-    for role in TEAM_ROLE_OPTIONS:
+    for role in role_options:
         role_id = role["id"]
         user_ids = assignments.get(role_id, [])
         cap_text = "no cap" if role["max"] is None else str(role["max"])
@@ -467,31 +517,53 @@ def build_team_roles_embed(guild_data: dict) -> discord.Embed:
             inline=False,
         )
 
-    embed.set_footer(text="Team role board")
+    embed.set_footer(text=footer)
     return embed
 
 
+def build_team_roles_embed(guild_data: dict) -> discord.Embed:
+    return build_role_board_embed(
+        guild_data,
+        TEAM_ROLE_OPTIONS,
+        "Team Role Selection",
+        "team role",
+        "Team role board",
+    )
+
+
+def build_task_roles_embed(guild_data: dict) -> discord.Embed:
+    return build_role_board_embed(
+        guild_data,
+        TASK_ROLE_OPTIONS,
+        "Task Role Selection",
+        "task role",
+        "Task role board",
+    )
+
+
 class TeamRoleButton(discord.ui.Button):
-    def __init__(self, role: dict):
+    def __init__(self, role: dict, custom_id_prefix: str):
         super().__init__(
             label=role["label"],
             style=discord.ButtonStyle.success,
-            custom_id=f"team_role:{role['id']}",
+            custom_id=f"{custom_id_prefix}:{role['id']}",
         )
         self.role_id = role["id"]
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
         if interaction.guild is None:
             await interaction.response.send_message(
-                "Team roles can only be selected in a server.",
+                f"{view.selection_label.title()}s can only be selected in a server."
+                if isinstance(view, TeamRoleView)
+                else "Roles can only be selected in a server.",
                 ephemeral=True,
             )
             return
 
-        view = self.view
         if not isinstance(view, TeamRoleView):
             await interaction.response.send_message(
-                "This team role board needs to be reposted with `/team roles`.",
+                "This role board needs to be reposted.",
                 ephemeral=True,
             )
             return
@@ -504,7 +576,7 @@ class TeamRoleButton(discord.ui.Button):
 
         if status in {"assigned", "removed"}:
             await interaction.response.edit_message(
-                embed=build_team_roles_embed(guild_data),
+                embed=view.build_embed(guild_data),
                 view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
@@ -514,14 +586,38 @@ class TeamRoleButton(discord.ui.Button):
 
 
 class TeamRoleView(discord.ui.View):
-    def __init__(self, store: TeamRoleStore):
+    def __init__(
+        self,
+        store: TeamRoleStore,
+        *,
+        role_options: list[dict] | None = None,
+        custom_id_prefix: str = "team_role",
+        build_embed=build_team_roles_embed,
+        repost_command: str = "/team roles",
+        selection_label: str = "team role",
+    ):
         super().__init__(timeout=None)
         self.store = store
+        self.role_options = role_options or TEAM_ROLE_OPTIONS
+        self.build_embed = build_embed
+        self.repost_command = repost_command
+        self.selection_label = selection_label
 
-        for index, role in enumerate(TEAM_ROLE_OPTIONS):
-            button = TeamRoleButton(role)
+        for index, role in enumerate(self.role_options):
+            button = TeamRoleButton(role, custom_id_prefix)
             button.row = 0 if index < 3 else 1
             self.add_item(button)
+
+
+def build_task_role_view(store: TeamRoleStore) -> TeamRoleView:
+    return TeamRoleView(
+        store,
+        role_options=TASK_ROLE_OPTIONS,
+        custom_id_prefix="task_role",
+        build_embed=build_task_roles_embed,
+        repost_command="/task roles",
+        selection_label="task role",
+    )
 
 
 class LinkCog(commands.Cog):
@@ -747,17 +843,215 @@ class TeamCog(commands.Cog):
         return True
 
 
+class TaskCog(commands.Cog):
+    task = app_commands.Group(name="task", description="Manage task role selections.")
+
+    def __init__(self, bot: commands.Bot, store: TeamRoleStore):
+        self.bot = bot
+        self.store = store
+
+    @task.command(name="roles", description="Post the task role selection board.")
+    async def roles(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message(
+                "Task roles can only be posted in a server channel.",
+                ephemeral=True,
+            )
+            return
+
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                "Only an administrator can post the task role board.",
+                ephemeral=True,
+            )
+            return
+
+        guild_data = await self.store.get_guild(interaction.guild.id)
+        await interaction.response.send_message(
+            embed=build_task_roles_embed(guild_data),
+            view=build_task_role_view(self.store),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        message = await interaction.original_response()
+        await self.store.set_board(interaction.guild.id, interaction.channel.id, message.id)
+
+    @task.command(name="roles_reset", description="Reset every task role assignment.")
+    async def roles_reset(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Task roles can only be reset in a server.",
+                ephemeral=True,
+            )
+            return
+
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                "Only an administrator can reset task roles.",
+                ephemeral=True,
+            )
+            return
+
+        guild_data = await self.store.reset_guild(interaction.guild.id)
+        board_updated = await self._edit_active_board(interaction, guild_data)
+        suffix = " The active board was updated." if board_updated else " Run `/task roles` to post a board."
+        await interaction.response.send_message(f"Task roles reset.{suffix}", ephemeral=True)
+
+    async def _edit_active_board(self, interaction: discord.Interaction, guild_data: dict) -> bool:
+        channel_id = guild_data.get("channel_id")
+        message_id = guild_data.get("message_id")
+
+        if not channel_id or not message_id:
+            return False
+
+        try:
+            channel = interaction.client.get_channel(int(channel_id))
+            if channel is None:
+                channel = await interaction.client.fetch_channel(int(channel_id))
+            if not isinstance(channel, discord.abc.Messageable):
+                return False
+            message = await channel.fetch_message(int(message_id))
+            await message.edit(
+                embed=build_task_roles_embed(guild_data),
+                view=build_task_role_view(self.store),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.DiscordException, ValueError):
+            return False
+
+        return True
+
+
+class RolesCog(commands.Cog):
+    roles = app_commands.Group(name="roles", description="Check linked player role selections.")
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        link_store: LinkStore,
+        team_store: TeamRoleStore,
+        task_store: TeamRoleStore,
+    ):
+        self.bot = bot
+        self.link_store = link_store
+        self.team_store = team_store
+        self.task_store = task_store
+
+    @roles.command(
+        name="missing",
+        description="Ping linked players who still need a team role or task role.",
+    )
+    async def missing(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Missing role reminders can only be sent in a server.",
+                ephemeral=True,
+            )
+            return
+
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                "Only an administrator can ping missing role reminders.",
+                ephemeral=True,
+            )
+            return
+
+        team_channel = find_text_channel_by_name(interaction.guild, "team-role-select")
+        task_channel = find_text_channel_by_name(interaction.guild, "task-role-select")
+        missing_channels = []
+        if team_channel is None:
+            missing_channels.append("#team-role-select")
+        if task_channel is None:
+            missing_channels.append("#task-role-select")
+        if missing_channels:
+            await interaction.response.send_message(
+                f"I couldn't find these channels: {', '.join(missing_channels)}.",
+                ephemeral=True,
+            )
+            return
+
+        link_data = await self.link_store.load()
+        links = link_data["links"]
+        if not links:
+            await interaction.response.send_message(
+                "No players are linked yet, so there is nobody to remind.",
+                ephemeral=True,
+            )
+            return
+
+        team_data = await self.team_store.get_guild(interaction.guild.id)
+        task_data = await self.task_store.get_guild(interaction.guild.id)
+        team_user_ids = assigned_user_ids(team_data)
+        task_user_ids = assigned_user_ids(task_data)
+
+        reminder_lines: list[str] = []
+        for discord_id, record in sorted(
+            links.items(),
+            key=lambda item: (item[1].get("discord_name") or item[0]).lower(),
+        ):
+            has_team_role = discord_id in team_user_ids
+            has_task_role = discord_id in task_user_ids
+
+            if has_team_role and has_task_role:
+                continue
+
+            if has_team_role:
+                reminder_lines.append(
+                    f"<@{discord_id}> please choose one task role in {task_channel.mention}."
+                )
+            elif has_task_role:
+                reminder_lines.append(
+                    f"<@{discord_id}> please choose one team role in {team_channel.mention}."
+                )
+            else:
+                reminder_lines.append(
+                    f"<@{discord_id}> please choose one team role in {team_channel.mention} "
+                    f"and one task role in {task_channel.mention}."
+                )
+
+        if not reminder_lines:
+            await interaction.response.send_message(
+                "Everyone in the linked list has selected both a team role and a task role.",
+                ephemeral=True,
+            )
+            return
+
+        chunks = chunk_lines(reminder_lines)
+        allowed_mentions = discord.AllowedMentions(
+            everyone=False,
+            users=True,
+            roles=False,
+        )
+        await interaction.response.send_message(
+            f"Missing role selections ({len(reminder_lines)}):\n{chunks[0]}",
+            allowed_mentions=allowed_mentions,
+        )
+
+        for chunk in chunks[1:]:
+            await interaction.followup.send(
+                chunk,
+                allowed_mentions=allowed_mentions,
+            )
+
+
 class LinkBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
         self.store = LinkStore(LINKS_FILE)
         self.team_store = TeamRoleStore(TEAM_ROLES_FILE)
+        self.task_store = TeamRoleStore(
+            TASK_ROLES_FILE,
+            role_options=TASK_ROLE_OPTIONS,
+            selection_label="task role",
+        )
 
     async def setup_hook(self) -> None:
         self.add_view(TeamRoleView(self.team_store))
+        self.add_view(build_task_role_view(self.task_store))
         await self.add_cog(LinkCog(self, self.store))
         await self.add_cog(TeamCog(self, self.team_store))
+        await self.add_cog(TaskCog(self, self.task_store))
+        await self.add_cog(RolesCog(self, self.store, self.team_store, self.task_store))
         guild_id = os.getenv("DISCORD_GUILD_ID")
         if guild_id:
             guild = discord.Object(id=int(guild_id))
