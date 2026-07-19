@@ -134,18 +134,13 @@ def chunk_lines(lines: list[str], max_length: int = 1900) -> list[str]:
     return chunks
 
 
-def build_steam_script(links: dict[str, dict], clan_tag: str | None = None) -> str:
-    clan_tag = clan_tag.strip() if clan_tag else ""
+def build_steam_script(links: dict[str, dict], clan_tag: str) -> str:
+    clan_tag = clan_tag.strip()
     players = [
         {
             "discordId": discord_id,
             "discordName": record.get("discord_name") or discord_id,
             "steamId": record["steam_id"],
-            "nickname": (
-                f"{clan_tag} {record.get('discord_name') or discord_id}"
-                if clan_tag
-                else record.get("discord_name") or discord_id
-            ),
         }
         for discord_id, record in sorted(
             links.items(),
@@ -158,6 +153,7 @@ def build_steam_script(links: dict[str, dict], clan_tag: str | None = None) -> s
 
     return f"""(async () => {{
   const players = {players_json};
+  const clanTag = {json.dumps(clan_tag)};
   const delayMs = 1800;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -202,6 +198,30 @@ def build_steam_script(links: dict[str, dict], clan_tag: str | None = None) -> s
     return parsed;
   }}
 
+  async function getSteamName(steamId) {{
+    const response = await fetch("/profiles/" + steamId + "/?xml=1", {{
+      credentials: "include",
+    }});
+    const text = await response.text();
+
+    if (!response.ok) {{
+      throw new Error(`${{response.status}} ${{response.statusText}}: ${{text.slice(0, 160)}}`);
+    }}
+
+    const profileXml = new DOMParser().parseFromString(text, "application/xml");
+    const parserError = profileXml.querySelector("parsererror");
+    if (parserError) {{
+      throw new Error("Steam profile XML could not be parsed.");
+    }}
+
+    const steamName = profileXml.querySelector("steamID")?.textContent?.trim();
+    if (!steamName) {{
+      throw new Error("Steam profile name was not found.");
+    }}
+
+    return steamName;
+  }}
+
   async function addFriend(steamId) {{
     return postForm("/actions/AddFriendAjax", {{
       steamid: steamId,
@@ -244,10 +264,12 @@ def build_steam_script(links: dict[str, dict], clan_tag: str | None = None) -> s
     await sleep(delayMs);
 
     try {{
-      await setNickname(player.steamId, player.nickname);
-      console.log(`[${{index + 1}}/${{players.length}}] Nickname set: ${{player.steamId}} -> ${{player.nickname}}`);
+      const steamName = await getSteamName(player.steamId);
+      const nickname = `${{clanTag}} ${{steamName}}`;
+      await setNickname(player.steamId, nickname);
+      console.log(`[${{index + 1}}/${{players.length}}] Nickname set: ${{player.steamId}} -> ${{nickname}}`);
     }} catch (error) {{
-      console.warn(`[${{index + 1}}/${{players.length}}] Nickname failed: ${{player.steamId}} -> ${{player.nickname}}`, error);
+      console.warn(`[${{index + 1}}/${{players.length}}] Nickname failed: ${{player.steamId}}`, error);
       console.warn("Steam changes nickname endpoints occasionally. If this happens, add friends first, then nickname from Steam's friends UI.");
     }}
 
@@ -366,13 +388,21 @@ class LinkCog(commands.Cog):
         description="Generate a Steam Community browser script for all linked players.",
     )
     @app_commands.describe(
-        clan_tag="Optional clan tag prefix for steam usernames",
+        clan_tag="Clan Tag",
     )
     async def generate(
         self,
         interaction: discord.Interaction,
-        clan_tag: str | None = None,
+        clan_tag: str,
     ) -> None:
+        clan_tag = clan_tag.strip()
+        if not clan_tag:
+            await interaction.response.send_message(
+                "Please enter a clan tag before generating the Steam script.",
+                ephemeral=True,
+            )
+            return
+
         data = await self.store.load()
         links = data["links"]
 
@@ -389,9 +419,8 @@ class LinkCog(commands.Cog):
             filename="steam-link-friends.js",
         )
 
-        tag_text = f" with clan tag `{clan_tag.strip()}`" if clan_tag and clan_tag.strip() else ""
         await interaction.response.send_message(
-            f"Generated the Steam Community console script{tag_text}. Open `steamcommunity.com`, press `F12`, choose the Console tab, and paste/run the script.",
+            f"Generated the Steam Community console script with clan tag `{clan_tag}`. Open `steamcommunity.com`, press `F12`, choose the Console tab, and paste/run the script.",
             file=file,
             ephemeral=True,
         )
