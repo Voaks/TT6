@@ -17,7 +17,18 @@ from discord.ext import commands
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 LINKS_FILE = DATA_DIR / "links.json"
+TEAM_ROLES_FILE = DATA_DIR / "team_roles.json"
 STEAM_ID_RE = re.compile(r"7656119\d{10}")
+
+TEAM_ROLE_OPTIONS = [
+    {"id": "build_team", "label": "Build Team", "max": 2},
+    {"id": "farm_base_clones", "label": "Farm Base and Clones", "max": 1},
+    {"id": "furnace_base", "label": "Furnace Base", "max": 2},
+    {"id": "electricity_industrial", "label": "Electricity and Industrial", "max": 2},
+    {"id": "monument_team", "label": "Monument Team", "max": 6},
+    {"id": "farm_team", "label": "Farm/Roam Team", "max": None},
+]
+TEAM_ROLE_BY_ID = {role["id"]: role for role in TEAM_ROLE_OPTIONS}
 
 
 def load_dotenv() -> None:
@@ -98,6 +109,159 @@ class LinkStore:
             temp_path = Path(temp_file.name)
 
         temp_path.replace(self.path)
+
+
+class TeamRoleStore:
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = asyncio.Lock()
+
+    async def get_guild(self, guild_id: int) -> dict:
+        async with self._lock:
+            data = self._read_unlocked()
+            return self._guild_unlocked(data, guild_id).copy()
+
+    async def set_board(
+        self,
+        guild_id: int,
+        channel_id: int,
+        message_id: int,
+    ) -> dict:
+        async with self._lock:
+            data = self._read_unlocked()
+            guild_data = self._guild_unlocked(data, guild_id)
+            guild_data["channel_id"] = str(channel_id)
+            guild_data["message_id"] = str(message_id)
+            guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._write_unlocked(data)
+            return guild_data.copy()
+
+    async def reset_guild(self, guild_id: int) -> dict:
+        async with self._lock:
+            data = self._read_unlocked()
+            guild_data = self._guild_unlocked(data, guild_id)
+            guild_data["assignments"] = self._empty_assignments()
+            guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._write_unlocked(data)
+            return guild_data.copy()
+
+    async def toggle_assignment(
+        self,
+        guild_id: int,
+        user: discord.abc.User,
+        role_id: str,
+    ) -> tuple[str, str, dict]:
+        async with self._lock:
+            data = self._read_unlocked()
+            guild_data = self._guild_unlocked(data, guild_id)
+            assignments = guild_data["assignments"]
+            user_id = str(user.id)
+            selected_role_id = self._selected_role_id(assignments, user_id)
+
+            if role_id not in TEAM_ROLE_BY_ID:
+                return "invalid", "That team role is not available anymore.", guild_data.copy()
+
+            if selected_role_id == role_id:
+                assignments[role_id] = [
+                    assigned_id for assigned_id in assignments[role_id] if assigned_id != user_id
+                ]
+                guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self._write_unlocked(data)
+                return "removed", "Removed your team role.", guild_data.copy()
+
+            if selected_role_id is not None:
+                selected_label = TEAM_ROLE_BY_ID[selected_role_id]["label"]
+                return (
+                    "already_assigned",
+                    f"You are already assigned to {selected_label}. Click that button again first to unassign.",
+                    guild_data.copy(),
+                )
+
+            role = TEAM_ROLE_BY_ID[role_id]
+            max_members = role["max"]
+            if max_members is not None and len(assignments[role_id]) >= max_members:
+                return "full", f"{role['label']} is full.", guild_data.copy()
+
+            assignments[role_id].append(user_id)
+            guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._write_unlocked(data)
+            return "assigned", f"Assigned you to {role['label']}.", guild_data.copy()
+
+    def _read_unlocked(self) -> dict:
+        if not self.path.exists():
+            return {"guilds": {}}
+
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            backup = self.path.with_suffix(".broken.json")
+            self.path.replace(backup)
+            return {"guilds": {}}
+
+        if not isinstance(data, dict) or not isinstance(data.get("guilds"), dict):
+            return {"guilds": {}}
+
+        return data
+
+    def _write_unlocked(self, data: dict) -> None:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=DATA_DIR,
+            delete=False,
+            suffix=".tmp",
+        ) as temp_file:
+            json.dump(data, temp_file, indent=2, sort_keys=True)
+            temp_file.write("\n")
+            temp_path = Path(temp_file.name)
+
+        temp_path.replace(self.path)
+
+    def _guild_unlocked(self, data: dict, guild_id: int) -> dict:
+        guilds = data.setdefault("guilds", {})
+        guild_data = guilds.setdefault(str(guild_id), {})
+        assignments = guild_data.get("assignments")
+
+        if not isinstance(assignments, dict):
+            assignments = self._empty_assignments()
+
+        guild_data["assignments"] = self._clean_assignments(assignments)
+        return guild_data
+
+    def _empty_assignments(self) -> dict[str, list[str]]:
+        return {role["id"]: [] for role in TEAM_ROLE_OPTIONS}
+
+    def _clean_assignments(self, assignments: dict) -> dict[str, list[str]]:
+        cleaned = self._empty_assignments()
+        already_seen: set[str] = set()
+
+        for role in TEAM_ROLE_OPTIONS:
+            role_id = role["id"]
+            raw_user_ids = assignments.get(role_id, [])
+            if not isinstance(raw_user_ids, list):
+                continue
+
+            for raw_user_id in raw_user_ids:
+                user_id = str(raw_user_id)
+                if not user_id.isdigit() or user_id in already_seen:
+                    continue
+
+                max_members = role["max"]
+                if max_members is not None and len(cleaned[role_id]) >= max_members:
+                    continue
+
+                cleaned[role_id].append(user_id)
+                already_seen.add(user_id)
+
+        return cleaned
+
+    def _selected_role_id(self, assignments: dict[str, list[str]], user_id: str) -> str | None:
+        for role_id, user_ids in assignments.items():
+            if user_id in user_ids:
+                return role_id
+
+        return None
 
 
 def normalize_steam_id(value: str) -> str | None:
@@ -281,6 +445,85 @@ def build_steam_script(links: dict[str, dict], clan_tag: str) -> str:
 """
 
 
+def build_team_roles_embed(guild_data: dict) -> discord.Embed:
+    assignments = guild_data.get("assignments") or {}
+    embed = discord.Embed(
+        title="Team Role Selection",
+        description=(
+            "Choose one team role.\n\n"
+            "Click your current selection again to remove yourself, then choose a new role."
+        ),
+        color=discord.Color.green(),
+    )
+
+    for role in TEAM_ROLE_OPTIONS:
+        role_id = role["id"]
+        user_ids = assignments.get(role_id, [])
+        cap_text = "no cap" if role["max"] is None else str(role["max"])
+        value = "\n".join(f"<@{user_id}>" for user_id in user_ids) if user_ids else "None"
+        embed.add_field(
+            name=f"{role['label']} ({len(user_ids)}/{cap_text})",
+            value=value,
+            inline=False,
+        )
+
+    embed.set_footer(text="Team role board")
+    return embed
+
+
+class TeamRoleButton(discord.ui.Button):
+    def __init__(self, role: dict):
+        super().__init__(
+            label=role["label"],
+            style=discord.ButtonStyle.success,
+            custom_id=f"team_role:{role['id']}",
+        )
+        self.role_id = role["id"]
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Team roles can only be selected in a server.",
+                ephemeral=True,
+            )
+            return
+
+        view = self.view
+        if not isinstance(view, TeamRoleView):
+            await interaction.response.send_message(
+                "This team role board needs to be reposted with `/team roles`.",
+                ephemeral=True,
+            )
+            return
+
+        status, message, guild_data = await view.store.toggle_assignment(
+            interaction.guild.id,
+            interaction.user,
+            self.role_id,
+        )
+
+        if status in {"assigned", "removed"}:
+            await interaction.response.edit_message(
+                embed=build_team_roles_embed(guild_data),
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+class TeamRoleView(discord.ui.View):
+    def __init__(self, store: TeamRoleStore):
+        super().__init__(timeout=None)
+        self.store = store
+
+        for index, role in enumerate(TEAM_ROLE_OPTIONS):
+            button = TeamRoleButton(role)
+            button.row = 0 if index < 3 else 1
+            self.add_item(button)
+
+
 class LinkCog(commands.Cog):
     link = app_commands.Group(name="link", description="Manage Discord to Steam links.")
 
@@ -426,14 +669,95 @@ class LinkCog(commands.Cog):
         )
 
 
+class TeamCog(commands.Cog):
+    team = app_commands.Group(name="team", description="Manage team role selections.")
+
+    def __init__(self, bot: commands.Bot, store: TeamRoleStore):
+        self.bot = bot
+        self.store = store
+
+    @team.command(name="roles", description="Post the team role selection board.")
+    async def roles(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message(
+                "Team roles can only be posted in a server channel.",
+                ephemeral=True,
+            )
+            return
+
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                "Only an administrator can post the team role board.",
+                ephemeral=True,
+            )
+            return
+
+        guild_data = await self.store.get_guild(interaction.guild.id)
+        await interaction.response.send_message(
+            embed=build_team_roles_embed(guild_data),
+            view=TeamRoleView(self.store),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        message = await interaction.original_response()
+        await self.store.set_board(interaction.guild.id, interaction.channel.id, message.id)
+
+    @team.command(name="roles_reset", description="Reset every team role assignment.")
+    async def roles_reset(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Team roles can only be reset in a server.",
+                ephemeral=True,
+            )
+            return
+
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                "Only an administrator can reset team roles.",
+                ephemeral=True,
+            )
+            return
+
+        guild_data = await self.store.reset_guild(interaction.guild.id)
+        board_updated = await self._edit_active_board(interaction, guild_data)
+        suffix = " The active board was updated." if board_updated else " Run `/team roles` to post a board."
+        await interaction.response.send_message(f"Team roles reset.{suffix}", ephemeral=True)
+
+    async def _edit_active_board(self, interaction: discord.Interaction, guild_data: dict) -> bool:
+        channel_id = guild_data.get("channel_id")
+        message_id = guild_data.get("message_id")
+
+        if not channel_id or not message_id:
+            return False
+
+        try:
+            channel = interaction.client.get_channel(int(channel_id))
+            if channel is None:
+                channel = await interaction.client.fetch_channel(int(channel_id))
+            if not isinstance(channel, discord.abc.Messageable):
+                return False
+            message = await channel.fetch_message(int(message_id))
+            await message.edit(
+                embed=build_team_roles_embed(guild_data),
+                view=TeamRoleView(self.store),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.DiscordException, ValueError):
+            return False
+
+        return True
+
+
 class LinkBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
         self.store = LinkStore(LINKS_FILE)
+        self.team_store = TeamRoleStore(TEAM_ROLES_FILE)
 
     async def setup_hook(self) -> None:
+        self.add_view(TeamRoleView(self.team_store))
         await self.add_cog(LinkCog(self, self.store))
+        await self.add_cog(TeamCog(self, self.team_store))
         guild_id = os.getenv("DISCORD_GUILD_ID")
         if guild_id:
             guild = discord.Object(id=int(guild_id))

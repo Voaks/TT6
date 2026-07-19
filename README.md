@@ -39,6 +39,21 @@ A basic Discord slash-command bot that links Discord users to SteamID64 values a
 - `/link list` displays all Discord to Steam links.
 - `/link generate` creates `steam-link-friends.js`, a browser console script for Steam Community.
 - `/link generate clan_tag:TT6` creates the same script, but prefixes Steam nicknames like `TT6 Spartan`.
+- `/team roles` posts the team role selection board. Administrator permission is required.
+- `/team roles_reset` clears all team role selections and updates the active board when possible. Administrator permission is required.
+
+## Team Roles
+
+The team role board uses green buttons and live-updates the message when members pick or remove a role. Members can only hold one team role at a time. To switch roles, they click their current role button again to unassign, then choose a new role.
+
+Current roles:
+
+- Build Team: max 2
+- Farm Base and Clones: max 1
+- Furnace Base: max 2
+- Electricity and Industrial: max 2
+- Monument Team: max 6
+- Farm/Roam Team: no cap
 
 ## Steam Script
 
@@ -53,4 +68,4 @@ The script sends Steam friend requests and tries to set each Steam nickname to t
 
 ## Notes
 
-The bot stores links in `data/links.json`. Steam IDs should be SteamID64 values, usually 17 digits and commonly starting with `7656119`.
+The bot stores links in `data/links.json` and team role selections in `data/team_roles.json`. Steam IDs should be SteamID64 values, usually 17 digits and commonly starting with `7656119`.
