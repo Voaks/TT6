@@ -44,10 +44,13 @@ A basic Discord slash-command bot that links Discord users to SteamID64 values a
 - `/task roles` posts the task role selection board. Administrator permission is required.
 - `/task roles_reset` clears all task role selections and updates the active board when possible. Administrator permission is required.
 - `/roles missing` pings linked players who still need to select a team role, task role, or both. Administrator permission is required.
+- `/raid checklist` posts the raid checklist board. Administrator permission is required.
 
 ## Team Roles
 
 The team role board uses green buttons and live-updates the message when members pick or remove a role. Members can only hold one team role at a time. To switch roles, they click their current role button again to unassign, then choose a new role.
+
+Members must be linked before selecting a team role. Unlinked members are sent to `#instructions` for the linking steps.
 
 Current roles:
 
@@ -62,6 +65,8 @@ Current roles:
 
 The task role board uses the same live-updating green button behavior as the team role board. Members can only hold one task role at a time. To switch task roles, they click their current task button again to unassign, then choose a new one.
 
+Members must be linked before selecting a task role. Unlinked members are sent to `#instructions` for the linking steps.
+
 Current task roles:
 
 - Deployables (Doors, Embrasures, Lockers, Etc.): max 8
@@ -72,6 +77,12 @@ Current task roles:
 ## Missing Role Reminders
 
 Run `/roles missing` to ping linked players who have not selected both required boards. The bot looks for channels named `team-role-select` and `task-role-select`, then tells each missing player where to finish selecting.
+
+## Raid Checklist
+
+Run `/raid checklist` to post a live-updating raid prep board. The command requires amounts for Ladders, Rocketers, rockets each Rocketer should bring, HV Rockets, Incendiary Rockets, Turrets, and ADSr.
+
+Bed is listed as numbered item 1 with `EVERYONE`. Every other checklist item has a matching numbered `I Will Do This` button. Members can only hold one raid checklist item at a time. To switch items, they click their current item button again to unassign, then choose a new one.
 
 ## Steam Script
 
@@ -86,4 +97,4 @@ The script sends Steam friend requests and tries to set each Steam nickname to t
 
 ## Notes
 
-The bot stores links in `data/links.json`, team role selections in `data/team_roles.json`, and task role selections in `data/task_roles.json`. Steam IDs should be SteamID64 values, usually 17 digits and commonly starting with `7656119`.
+The bot stores links in `data/links.json`, team role selections in `data/team_roles.json`, task role selections in `data/task_roles.json`, and raid checklist selections in `data/raid_checklist.json`. Steam IDs should be SteamID64 values, usually 17 digits and commonly starting with `7656119`.

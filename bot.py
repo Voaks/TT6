@@ -19,6 +19,7 @@ DATA_DIR = BASE_DIR / "data"
 LINKS_FILE = DATA_DIR / "links.json"
 TEAM_ROLES_FILE = DATA_DIR / "team_roles.json"
 TASK_ROLES_FILE = DATA_DIR / "task_roles.json"
+RAID_CHECKLIST_FILE = DATA_DIR / "raid_checklist.json"
 STEAM_ID_RE = re.compile(r"7656119\d{10}")
 
 TEAM_ROLE_OPTIONS = [
@@ -40,6 +41,20 @@ TASK_ROLE_OPTIONS = [
     {"id": "autolockers", "label": "Autolockers", "max": 1},
     {"id": "nades_smokes_seal_mats", "label": "Nades/Smokes/Seal Mats", "max": 8},
     {"id": "bed_placer", "label": "Bed Placer", "max": 3},
+]
+
+RAID_CHECKLIST_OPTIONS = [
+    {"id": "ladders", "label": "Ladders", "max": None},
+    {"id": "rocketers", "label": "Rocketers", "max": None},
+    {"id": "hv_rockets", "label": "HV Rockets", "max": None},
+    {"id": "incendiary_rockets", "label": "Incendiary Rockets", "max": None},
+    {"id": "fob_mats", "label": "Fob Mats", "max": None},
+    {"id": "turrets", "label": "Turrets", "max": None},
+    {"id": "adsr", "label": "ADSr", "max": None},
+    {"id": "u_wall_cargo_mats", "label": "U Wall/Cargo Mats", "max": None},
+    {"id": "med_mats", "label": "Med Mats", "max": None},
+    {"id": "doors", "label": "Doors", "max": None},
+    {"id": "t2_rekits", "label": "T2 Rekits", "max": None},
 ]
 
 
@@ -146,12 +161,15 @@ class TeamRoleStore:
         guild_id: int,
         channel_id: int,
         message_id: int,
+        config: dict | None = None,
     ) -> dict:
         async with self._lock:
             data = self._read_unlocked()
             guild_data = self._guild_unlocked(data, guild_id)
             guild_data["channel_id"] = str(channel_id)
             guild_data["message_id"] = str(message_id)
+            if config is not None:
+                guild_data["config"] = config
             guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._write_unlocked(data)
             return guild_data.copy()
@@ -340,6 +358,11 @@ def find_text_channel_by_name(guild: discord.Guild, name: str) -> discord.TextCh
             return channel
 
     return None
+
+
+def channel_reference(guild: discord.Guild, name: str) -> str:
+    channel = find_text_channel_by_name(guild, name)
+    return channel.mention if channel else f"#{name}"
 
 
 def build_steam_script(links: dict[str, dict], clan_tag: str) -> str:
@@ -541,10 +564,89 @@ def build_task_roles_embed(guild_data: dict) -> discord.Embed:
     )
 
 
+def raid_checklist_config(
+    ladders: int,
+    rocketers: int,
+    rockets_each: int,
+    hv_rockets: int,
+    incendiary_rockets: int,
+    turrets: int,
+    adsr: int,
+) -> dict:
+    return {
+        "ladders": ladders,
+        "rocketers": rocketers,
+        "rockets_each": rockets_each,
+        "hv_rockets": hv_rockets,
+        "incendiary_rockets": incendiary_rockets,
+        "turrets": turrets,
+        "adsr": adsr,
+    }
+
+
+def build_raid_checklist_options(guild_data: dict) -> list[dict]:
+    config = guild_data.get("config") if isinstance(guild_data.get("config"), dict) else {}
+    ladders = config.get("ladders", 5)
+    rocketers = config.get("rocketers", 1)
+    rockets_each = config.get("rockets_each", 1)
+    hv_rockets = config.get("hv_rockets", 0)
+    incendiary_rockets = config.get("incendiary_rockets", 0)
+    turrets = config.get("turrets", 4)
+    adsr = config.get("adsr", 1)
+
+    labels = [
+        ("ladders", f"{ladders} Ladders"),
+        ("rocketers", f"{rocketers} Rocketers ({rockets_each} rockets each)"),
+        ("hv_rockets", f"{hv_rockets} HV Rockets"),
+        ("incendiary_rockets", f"{incendiary_rockets} Incendiary Rockets"),
+        ("fob_mats", "Fob Mats (20-24k Metal + 12k Wood)"),
+        (
+            "turrets",
+            f"{turrets} Turrets, Battery, wiring tool, branches/splitters, chain links",
+        ),
+        ("adsr", f"{adsr} ADSr"),
+        ("u_wall_cargo_mats", "U Wall/Cargo Mats"),
+        ("med_mats", "Med Mats (T2 + 3k Cloth + 1k Low Grade + 4k Metal Frags)"),
+        ("doors", "Doors (2 armored/sheet double doors)"),
+        ("t2_rekits", "T2 Rekits (6-9 tommys + hazmats + pistol bullets)"),
+    ]
+
+    return [
+        {
+            "id": role_id,
+            "label": f"{index}. {label}",
+            "max": None,
+            "button_label": f"{index}. I Will Do This",
+        }
+        for index, (role_id, label) in enumerate(labels, start=2)
+    ]
+
+
+def build_raid_checklist_embed(guild_data: dict) -> discord.Embed:
+    assignments = guild_data.get("assignments") or {}
+    embed = discord.Embed(
+        title="Raid Checklist",
+        description=(
+            "Choose one thing to handle.\n\n"
+            "Click your current selection again to remove yourself, then choose a new one."
+        ),
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="1. Bed", value="EVERYONE", inline=False)
+
+    for role in build_raid_checklist_options(guild_data):
+        user_ids = assignments.get(role["id"], [])
+        value = "\n".join(f"<@{user_id}>" for user_id in user_ids) if user_ids else "None"
+        embed.add_field(name=role["label"], value=value, inline=False)
+
+    embed.set_footer(text="Raid checklist")
+    return embed
+
+
 class TeamRoleButton(discord.ui.Button):
     def __init__(self, role: dict, custom_id_prefix: str):
         super().__init__(
-            label=role["label"],
+            label=role.get("button_label") or role["label"],
             style=discord.ButtonStyle.success,
             custom_id=f"{custom_id_prefix}:{role['id']}",
         )
@@ -567,6 +669,17 @@ class TeamRoleButton(discord.ui.Button):
                 ephemeral=True,
             )
             return
+
+        if view.link_store is not None:
+            link_data = await view.link_store.load()
+            if str(interaction.user.id) not in link_data["links"]:
+                instructions = channel_reference(interaction.guild, "instructions")
+                await interaction.response.send_message(
+                    f"You need to be on the linked list before selecting a role. "
+                    f"Please go to {instructions} for the linking steps.",
+                    ephemeral=True,
+                )
+                return
 
         status, message, guild_data = await view.store.toggle_assignment(
             interaction.guild.id,
@@ -595,6 +708,7 @@ class TeamRoleView(discord.ui.View):
         build_embed=build_team_roles_embed,
         repost_command: str = "/team roles",
         selection_label: str = "team role",
+        link_store: LinkStore | None = None,
     ):
         super().__init__(timeout=None)
         self.store = store
@@ -602,14 +716,22 @@ class TeamRoleView(discord.ui.View):
         self.build_embed = build_embed
         self.repost_command = repost_command
         self.selection_label = selection_label
+        self.link_store = link_store
 
         for index, role in enumerate(self.role_options):
             button = TeamRoleButton(role, custom_id_prefix)
-            button.row = 0 if index < 3 else 1
+            button.row = index // 5
             self.add_item(button)
 
 
-def build_task_role_view(store: TeamRoleStore) -> TeamRoleView:
+def build_team_role_view(store: TeamRoleStore, link_store: LinkStore | None = None) -> TeamRoleView:
+    return TeamRoleView(store, link_store=link_store)
+
+
+def build_task_role_view(
+    store: TeamRoleStore,
+    link_store: LinkStore | None = None,
+) -> TeamRoleView:
     return TeamRoleView(
         store,
         role_options=TASK_ROLE_OPTIONS,
@@ -617,6 +739,18 @@ def build_task_role_view(store: TeamRoleStore) -> TeamRoleView:
         build_embed=build_task_roles_embed,
         repost_command="/task roles",
         selection_label="task role",
+        link_store=link_store,
+    )
+
+
+def build_raid_checklist_view(store: TeamRoleStore) -> TeamRoleView:
+    return TeamRoleView(
+        store,
+        role_options=build_raid_checklist_options({}),
+        custom_id_prefix="raid_checklist",
+        build_embed=build_raid_checklist_embed,
+        repost_command="/raid checklist",
+        selection_label="raid checklist item",
     )
 
 
@@ -768,9 +902,10 @@ class LinkCog(commands.Cog):
 class TeamCog(commands.Cog):
     team = app_commands.Group(name="team", description="Manage team role selections.")
 
-    def __init__(self, bot: commands.Bot, store: TeamRoleStore):
+    def __init__(self, bot: commands.Bot, store: TeamRoleStore, link_store: LinkStore):
         self.bot = bot
         self.store = store
+        self.link_store = link_store
 
     @team.command(name="roles", description="Post the team role selection board.")
     async def roles(self, interaction: discord.Interaction) -> None:
@@ -791,7 +926,7 @@ class TeamCog(commands.Cog):
         guild_data = await self.store.get_guild(interaction.guild.id)
         await interaction.response.send_message(
             embed=build_team_roles_embed(guild_data),
-            view=TeamRoleView(self.store),
+            view=build_team_role_view(self.store, self.link_store),
             allowed_mentions=discord.AllowedMentions.none(),
         )
         message = await interaction.original_response()
@@ -834,7 +969,7 @@ class TeamCog(commands.Cog):
             message = await channel.fetch_message(int(message_id))
             await message.edit(
                 embed=build_team_roles_embed(guild_data),
-                view=TeamRoleView(self.store),
+                view=build_team_role_view(self.store, self.link_store),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except (discord.DiscordException, ValueError):
@@ -846,9 +981,10 @@ class TeamCog(commands.Cog):
 class TaskCog(commands.Cog):
     task = app_commands.Group(name="task", description="Manage task role selections.")
 
-    def __init__(self, bot: commands.Bot, store: TeamRoleStore):
+    def __init__(self, bot: commands.Bot, store: TeamRoleStore, link_store: LinkStore):
         self.bot = bot
         self.store = store
+        self.link_store = link_store
 
     @task.command(name="roles", description="Post the task role selection board.")
     async def roles(self, interaction: discord.Interaction) -> None:
@@ -869,7 +1005,7 @@ class TaskCog(commands.Cog):
         guild_data = await self.store.get_guild(interaction.guild.id)
         await interaction.response.send_message(
             embed=build_task_roles_embed(guild_data),
-            view=build_task_role_view(self.store),
+            view=build_task_role_view(self.store, self.link_store),
             allowed_mentions=discord.AllowedMentions.none(),
         )
         message = await interaction.original_response()
@@ -912,13 +1048,101 @@ class TaskCog(commands.Cog):
             message = await channel.fetch_message(int(message_id))
             await message.edit(
                 embed=build_task_roles_embed(guild_data),
-                view=build_task_role_view(self.store),
+                view=build_task_role_view(self.store, self.link_store),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except (discord.DiscordException, ValueError):
             return False
 
         return True
+
+
+class RaidCog(commands.Cog):
+    raid = app_commands.Group(name="raid", description="Manage raid prep checklists.")
+
+    def __init__(self, bot: commands.Bot, store: TeamRoleStore):
+        self.bot = bot
+        self.store = store
+
+    @raid.command(name="checklist", description="Post the raid checklist assignment board.")
+    @app_commands.describe(
+        ladders="How many ladders are needed.",
+        rocketers="How many rocketers are needed.",
+        rockets_each="How many rockets each rocketer should bring.",
+        hv_rockets="How many HV rockets are needed.",
+        incendiary_rockets="How many incendiary rockets are needed.",
+        turrets="How many turrets are needed.",
+        adsr="How many ADSr are needed.",
+    )
+    async def checklist(
+        self,
+        interaction: discord.Interaction,
+        ladders: int,
+        rocketers: int,
+        rockets_each: int,
+        hv_rockets: int,
+        incendiary_rockets: int,
+        turrets: int,
+        adsr: int,
+    ) -> None:
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message(
+                "Raid checklists can only be posted in a server channel.",
+                ephemeral=True,
+            )
+            return
+
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                "Only an administrator can post the raid checklist.",
+                ephemeral=True,
+            )
+            return
+
+        amounts = {
+            "ladders": ladders,
+            "rocketers": rocketers,
+            "rockets each": rockets_each,
+            "hv_rockets": hv_rockets,
+            "incendiary_rockets": incendiary_rockets,
+            "turrets": turrets,
+            "adsr": adsr,
+        }
+        invalid_amounts = [
+            name.replace("_", " ")
+            for name, amount in amounts.items()
+            if amount < 1
+        ]
+        if invalid_amounts:
+            await interaction.response.send_message(
+                f"These amounts must be at least 1: {', '.join(invalid_amounts)}.",
+                ephemeral=True,
+            )
+            return
+
+        config = raid_checklist_config(
+            ladders,
+            rocketers,
+            rockets_each,
+            hv_rockets,
+            incendiary_rockets,
+            turrets,
+            adsr,
+        )
+        guild_data = await self.store.get_guild(interaction.guild.id)
+        guild_data["config"] = config
+        await interaction.response.send_message(
+            embed=build_raid_checklist_embed(guild_data),
+            view=build_raid_checklist_view(self.store),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        message = await interaction.original_response()
+        await self.store.set_board(
+            interaction.guild.id,
+            interaction.channel.id,
+            message.id,
+            config=config,
+        )
 
 
 class RolesCog(commands.Cog):
@@ -1044,13 +1268,20 @@ class LinkBot(commands.Bot):
             role_options=TASK_ROLE_OPTIONS,
             selection_label="task role",
         )
+        self.raid_store = TeamRoleStore(
+            RAID_CHECKLIST_FILE,
+            role_options=RAID_CHECKLIST_OPTIONS,
+            selection_label="raid checklist item",
+        )
 
     async def setup_hook(self) -> None:
-        self.add_view(TeamRoleView(self.team_store))
-        self.add_view(build_task_role_view(self.task_store))
+        self.add_view(build_team_role_view(self.team_store, self.store))
+        self.add_view(build_task_role_view(self.task_store, self.store))
+        self.add_view(build_raid_checklist_view(self.raid_store))
         await self.add_cog(LinkCog(self, self.store))
-        await self.add_cog(TeamCog(self, self.team_store))
-        await self.add_cog(TaskCog(self, self.task_store))
+        await self.add_cog(TeamCog(self, self.team_store, self.store))
+        await self.add_cog(TaskCog(self, self.task_store, self.store))
+        await self.add_cog(RaidCog(self, self.raid_store))
         await self.add_cog(RolesCog(self, self.store, self.team_store, self.task_store))
         guild_id = os.getenv("DISCORD_GUILD_ID")
         if guild_id:
