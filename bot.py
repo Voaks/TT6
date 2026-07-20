@@ -45,7 +45,7 @@ TASK_ROLE_OPTIONS = [
 
 RAID_CHECKLIST_OPTIONS = [
     {"id": "ladders", "label": "Ladders", "max": None},
-    {"id": "rocketers", "label": "Rocketers", "max": None},
+    {"id": "rocketers", "label": "Rocketers", "max": None, "max_config_key": "rocketers"},
     {"id": "hv_rockets", "label": "HV Rockets", "max": None},
     {"id": "incendiary_rockets", "label": "Incendiary Rockets", "max": None},
     {"id": "fob_mats", "label": "Fob Mats", "max": None},
@@ -179,6 +179,7 @@ class TeamRoleStore:
             data = self._read_unlocked()
             guild_data = self._guild_unlocked(data, guild_id)
             guild_data["assignments"] = self._empty_assignments()
+            guild_data["confirmations"] = {}
             guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._write_unlocked(data)
             return guild_data.copy()
@@ -218,6 +219,11 @@ class TeamRoleStore:
 
             role = self.role_by_id[role_id]
             max_members = role["max"]
+            max_config_key = role.get("max_config_key")
+            if max_members is None and max_config_key:
+                configured_max = guild_data.get("config", {}).get(max_config_key)
+                if isinstance(configured_max, int):
+                    max_members = configured_max
             if max_members is not None and len(assignments[role_id]) >= max_members:
                 return "full", f"{role['label']} is full.", guild_data.copy()
 
@@ -225,6 +231,33 @@ class TeamRoleStore:
             guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             self._write_unlocked(data)
             return "assigned", f"Assigned you to {role['label']}.", guild_data.copy()
+
+    async def toggle_confirmation(
+        self,
+        guild_id: int,
+        user: discord.abc.User,
+        confirmation_id: str,
+        label: str,
+    ) -> tuple[str, str, dict]:
+        async with self._lock:
+            data = self._read_unlocked()
+            guild_data = self._guild_unlocked(data, guild_id)
+            confirmations = guild_data["confirmations"]
+            user_id = str(user.id)
+            confirmed_user_ids = confirmations.setdefault(confirmation_id, [])
+
+            if user_id in confirmed_user_ids:
+                confirmations[confirmation_id] = [
+                    confirmed_id for confirmed_id in confirmed_user_ids if confirmed_id != user_id
+                ]
+                guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                self._write_unlocked(data)
+                return "removed", f"Removed your {label} confirmation.", guild_data.copy()
+
+            confirmed_user_ids.append(user_id)
+            guild_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._write_unlocked(data)
+            return "confirmed", f"Confirmed {label}.", guild_data.copy()
 
     def _read_unlocked(self) -> dict:
         if not self.path.exists():
@@ -261,11 +294,15 @@ class TeamRoleStore:
         guilds = data.setdefault("guilds", {})
         guild_data = guilds.setdefault(str(guild_id), {})
         assignments = guild_data.get("assignments")
+        confirmations = guild_data.get("confirmations")
 
         if not isinstance(assignments, dict):
             assignments = self._empty_assignments()
+        if not isinstance(confirmations, dict):
+            confirmations = {}
 
         guild_data["assignments"] = self._clean_assignments(assignments)
+        guild_data["confirmations"] = self._clean_confirmations(confirmations)
         return guild_data
 
     def _empty_assignments(self) -> dict[str, list[str]]:
@@ -292,6 +329,26 @@ class TeamRoleStore:
 
                 cleaned[role_id].append(user_id)
                 already_seen.add(user_id)
+
+        return cleaned
+
+    def _clean_confirmations(self, confirmations: dict) -> dict[str, list[str]]:
+        cleaned: dict[str, list[str]] = {}
+
+        for confirmation_id, raw_user_ids in confirmations.items():
+            if not isinstance(raw_user_ids, list):
+                continue
+
+            clean_user_ids = []
+            already_seen: set[str] = set()
+            for raw_user_id in raw_user_ids:
+                user_id = str(raw_user_id)
+                if not user_id.isdigit() or user_id in already_seen:
+                    continue
+                clean_user_ids.append(user_id)
+                already_seen.add(user_id)
+
+            cleaned[str(confirmation_id)] = clean_user_ids
 
         return cleaned
 
@@ -615,15 +672,37 @@ def build_raid_checklist_options(guild_data: dict) -> list[dict]:
         {
             "id": role_id,
             "label": f"{index}. {label}",
-            "max": None,
-            "button_label": f"{index}. I Will Do This",
+            "max": rocketers if role_id == "rocketers" else None,
+            "button_label": f"{index}. {button_label}",
         }
-        for index, (role_id, label) in enumerate(labels, start=2)
+        for index, (role_id, label, button_label) in enumerate(
+            [
+                ("ladders", labels[0][1], "Ladders"),
+                ("rocketers", labels[1][1], "Rocketer"),
+                ("hv_rockets", labels[2][1], "HV Rockets"),
+                ("incendiary_rockets", labels[3][1], "Incendiary Rockets"),
+                ("fob_mats", labels[4][1], "Fob Mats"),
+                ("turrets", labels[5][1], "Turrets"),
+                ("adsr", labels[6][1], "ADSr"),
+                ("u_wall_cargo_mats", labels[7][1], "U Wall/Cargo Mats"),
+                ("med_mats", labels[8][1], "Med Mats"),
+                ("doors", labels[9][1], "Doors"),
+                ("t2_rekits", labels[10][1], "Rekits"),
+            ],
+            start=2,
+        )
     ]
 
 
 def build_raid_checklist_embed(guild_data: dict) -> discord.Embed:
     assignments = guild_data.get("assignments") or {}
+    confirmations = guild_data.get("confirmations") or {}
+    bed_confirmations = confirmations.get("bed", [])
+    bed_value = "EVERYONE"
+    if bed_confirmations:
+        confirmed_names = "\n".join(f"<@{user_id}>" for user_id in bed_confirmations)
+        bed_value = f"EVERYONE\nConfirmed:\n{confirmed_names}"
+
     embed = discord.Embed(
         title="Raid Checklist",
         description=(
@@ -632,12 +711,13 @@ def build_raid_checklist_embed(guild_data: dict) -> discord.Embed:
         ),
         color=discord.Color.green(),
     )
-    embed.add_field(name="1. Bed", value="EVERYONE", inline=False)
+    embed.add_field(name="1. Bed", value=bed_value, inline=False)
 
     for role in build_raid_checklist_options(guild_data):
         user_ids = assignments.get(role["id"], [])
         value = "\n".join(f"<@{user_id}>" for user_id in user_ids) if user_ids else "None"
-        embed.add_field(name=role["label"], value=value, inline=False)
+        cap_text = f" ({len(user_ids)}/{role['max']})" if role["max"] is not None else ""
+        embed.add_field(name=f"{role['label']}{cap_text}", value=value, inline=False)
 
     embed.set_footer(text="Raid checklist")
     return embed
@@ -698,6 +778,48 @@ class TeamRoleButton(discord.ui.Button):
         await interaction.response.send_message(message, ephemeral=True)
 
 
+class BedConfirmationButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="1. Confirm Bed",
+            style=discord.ButtonStyle.success,
+            custom_id="raid_checklist_bed:confirm",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Bed confirmations can only be selected in a server.",
+                ephemeral=True,
+            )
+            return
+
+        if not isinstance(view, TeamRoleView):
+            await interaction.response.send_message(
+                "This raid checklist needs to be reposted.",
+                ephemeral=True,
+            )
+            return
+
+        status, message, guild_data = await view.store.toggle_confirmation(
+            interaction.guild.id,
+            interaction.user,
+            "bed",
+            "Bed",
+        )
+
+        if status in {"confirmed", "removed"}:
+            await interaction.response.edit_message(
+                embed=view.build_embed(guild_data),
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        await interaction.response.send_message(message, ephemeral=True)
+
+
 class TeamRoleView(discord.ui.View):
     def __init__(
         self,
@@ -709,6 +831,8 @@ class TeamRoleView(discord.ui.View):
         repost_command: str = "/team roles",
         selection_label: str = "team role",
         link_store: LinkStore | None = None,
+        starting_button_index: int = 0,
+        leading_items: list[discord.ui.Item] | None = None,
     ):
         super().__init__(timeout=None)
         self.store = store
@@ -718,9 +842,12 @@ class TeamRoleView(discord.ui.View):
         self.selection_label = selection_label
         self.link_store = link_store
 
+        for item in leading_items or []:
+            self.add_item(item)
+
         for index, role in enumerate(self.role_options):
             button = TeamRoleButton(role, custom_id_prefix)
-            button.row = index // 5
+            button.row = (starting_button_index + index) // 5
             self.add_item(button)
 
 
@@ -744,14 +871,19 @@ def build_task_role_view(
 
 
 def build_raid_checklist_view(store: TeamRoleStore) -> TeamRoleView:
-    return TeamRoleView(
+    bed_button = BedConfirmationButton()
+    bed_button.row = 0
+    view = TeamRoleView(
         store,
         role_options=build_raid_checklist_options({}),
         custom_id_prefix="raid_checklist",
         build_embed=build_raid_checklist_embed,
         repost_command="/raid checklist",
         selection_label="raid checklist item",
+        starting_button_index=1,
+        leading_items=[bed_button],
     )
+    return view
 
 
 class LinkCog(commands.Cog):
@@ -1143,6 +1275,55 @@ class RaidCog(commands.Cog):
             message.id,
             config=config,
         )
+
+    @raid.command(name="checklist_reset", description="Reset every raid checklist assignment.")
+    async def checklist_reset(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "Raid checklists can only be reset in a server.",
+                ephemeral=True,
+            )
+            return
+
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                "Only an administrator can reset the raid checklist.",
+                ephemeral=True,
+            )
+            return
+
+        guild_data = await self.store.reset_guild(interaction.guild.id)
+        board_updated = await self._edit_active_board(interaction, guild_data)
+        suffix = (
+            " The active checklist was updated."
+            if board_updated
+            else " Run `/raid checklist` to post a checklist."
+        )
+        await interaction.response.send_message(f"Raid checklist reset.{suffix}", ephemeral=True)
+
+    async def _edit_active_board(self, interaction: discord.Interaction, guild_data: dict) -> bool:
+        channel_id = guild_data.get("channel_id")
+        message_id = guild_data.get("message_id")
+
+        if not channel_id or not message_id:
+            return False
+
+        try:
+            channel = interaction.client.get_channel(int(channel_id))
+            if channel is None:
+                channel = await interaction.client.fetch_channel(int(channel_id))
+            if not isinstance(channel, discord.abc.Messageable):
+                return False
+            message = await channel.fetch_message(int(message_id))
+            await message.edit(
+                embed=build_raid_checklist_embed(guild_data),
+                view=build_raid_checklist_view(self.store),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.DiscordException, ValueError):
+            return False
+
+        return True
 
 
 class RolesCog(commands.Cog):

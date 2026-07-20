@@ -45,6 +45,7 @@ A basic Discord slash-command bot that links Discord users to SteamID64 values a
 - `/task roles_reset` clears all task role selections and updates the active board when possible. Administrator permission is required.
 - `/roles missing` pings linked players who still need to select a team role, task role, or both. Administrator permission is required.
 - `/raid checklist` posts the raid checklist board. Administrator permission is required.
+- `/raid checklist_reset` clears raid checklist selections and Bed confirmations, then updates the active checklist when possible. Administrator permission is required.
 
 ## Team Roles
 
@@ -82,7 +83,9 @@ Run `/roles missing` to ping linked players who have not selected both required 
 
 Run `/raid checklist` to post a live-updating raid prep board. The command requires amounts for Ladders, Rocketers, rockets each Rocketer should bring, HV Rockets, Incendiary Rockets, Turrets, and ADSr.
 
-Bed is listed as numbered item 1 with `EVERYONE`. Every other checklist item has a matching numbered `I Will Do This` button. Members can only hold one raid checklist item at a time. To switch items, they click their current item button again to unassign, then choose a new one.
+Bed is listed as numbered item 1 with `EVERYONE` and has a confirmation button. Every other checklist item has a matching numbered item-name button. Members can only hold one raid checklist item at a time. To switch items, they click their current item button again to unassign, then choose a new one.
+
+The Rocketer button is capped by the `rocketers` amount entered when the checklist is posted.
 
 ## Steam Script
 
